@@ -1,0 +1,25 @@
+# Local Models Configuration
+# Format: source_type:model_path_or_name
+# 
+# Source types:
+# ollama: - Uses Ollama API (model_name)
+# lmstudio: - Uses LM Studio local path 
+# local: - Direct Hugging Face model path
+# huggingface: - Download from HF Hub
+
+# Ollama models (just use the model name from 'ollama list')
+ollama:gpt-oss-20b
+ollama:llama3.2:3b
+ollama:mistral:7b
+
+# LM Studio models (use full path to model directory)
+# lmstudio:C:/Users/barke/.cache/lm-studio/models/openai/gpt-oss-20b
+# lmstudio:C:/Users/barke/.cache/lm-studio/models/meta-llama/Llama-3.2-3B
+
+# Local Hugging Face model directories
+# local:C:/Models/GPT-OSS-20B
+# local:C:/Models/Llama-3.2-3B
+
+# Hugging Face Hub (original method)
+huggingface:gpt2
+huggingface:microsoft/DialoGPT-medium

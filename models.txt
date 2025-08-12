@@ -1,0 +1,4 @@
+gpt-oss
+gpt-oss:120b
+llama3
+qwen3-coder-30b-a3b:latest
