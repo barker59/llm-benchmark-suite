@@ -1,5 +1,13 @@
-import time, psutil, GPUtil, pandas as pd, os, gc, requests, argparse, subprocess
+import time, psutil, pandas as pd, os, gc, requests, argparse, subprocess
 from datetime import datetime
+
+# Try to import GPUtil, but don't fail if it's not available
+try:
+    import GPUtil
+    GPUTIL_AVAILABLE = True
+except ImportError:
+    GPUTIL_AVAILABLE = False
+    print("Warning: GPUtil not available. GPU detection will be disabled.")
 
 class PromptBenchmark:
     def __init__(self, prompts_file="prompts.txt", models_file="models.txt"):
@@ -40,9 +48,32 @@ class PromptBenchmark:
             return False
 
     # --- System/GPU info ---
-    def get_gpu_info(self):
+    def _safe_gpu_detection(self):
+        """Safely detect GPUs without failing on nvidia-smi errors."""
+        if not GPUTIL_AVAILABLE:
+            return []
         try:
             gpus = GPUtil.getGPUs()
+            return gpus if gpus else []
+        except Exception as e:
+            # Common errors: nvidia-smi not found, no NVIDIA drivers, etc.
+            return []
+    
+    def has_gpu_support(self):
+        """Check if GPU support is available without failing."""
+        return bool(self._safe_gpu_detection())
+    
+    def get_gpu_name(self):
+        """Safely get GPU name without failing."""
+        try:
+            gpu_info = self.get_gpu_info()
+            return gpu_info['name'] if gpu_info else "N/A"
+        except Exception:
+            return "N/A"
+    
+    def get_gpu_info(self):
+        try:
+            gpus = self._safe_gpu_detection()
             if gpus:
                 gpu = gpus[0]
                 return {
@@ -266,7 +297,7 @@ class PromptBenchmark:
                             "std_deviation": -1,
                             "max_new_tokens": max_new_tokens,
                             "memory_used_mb": -1,
-                            "gpu_name": self.get_gpu_info()['name'] if (use_gpu and self.get_gpu_info()) else "N/A",
+                            "gpu_name": self.get_gpu_name() if use_gpu else "N/A",
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "error": error_msg,
                             "error_type": error_type
@@ -298,7 +329,7 @@ class PromptBenchmark:
                     "std_deviation": -1,
                     "max_new_tokens": max_new_tokens,
                     "memory_used_mb": -1,
-                    "gpu_name": self.get_gpu_info()['name'] if (use_gpu and self.get_gpu_info()) else "N/A",
+                    "gpu_name": self.get_gpu_name() if use_gpu else "N/A",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "error": "All iterations failed",
                     "error_type": "all_iterations_failed"
@@ -307,7 +338,7 @@ class PromptBenchmark:
                 avg_time = sum(times) / len(times)
                 std_dev = (sum((x - avg_time) ** 2 for x in times) / len(times)) ** 0.5
                 avg_mem = sum(mem_deltas) / len(mem_deltas) if any(mem_deltas) else 0
-                gpu_name = self.get_gpu_info()['name'] if (use_gpu and self.get_gpu_info()) else "N/A"
+                gpu_name = self.get_gpu_name() if use_gpu else "N/A"
 
                 result = {
                     "model": model_tag,
@@ -373,7 +404,7 @@ class PromptBenchmark:
         print(f"\n✓ Proceeding with {len(self.models)} valid models")
         return True
 
-    def run_comparison_benchmark(self, max_new_tokens=100, model_name_filter: str | None = None, skip_cpu=False, skip_gpu=False):
+    def run_comparison_benchmark(self, max_new_tokens=100, model_name_filter=None, skip_cpu=False, skip_gpu=False):
         if not self.load_prompts(): return
         if not self.load_models(): return
 
@@ -402,8 +433,9 @@ class PromptBenchmark:
         print(f"Max new tokens per generation: {max_new_tokens}")
         print(f"System Memory: {self.get_system_memory()['total'] / (1024**3):.2f} GB")
 
-        has_gpu = bool(GPUtil.getGPUs())
-        print(f"GPUs detected: {len(GPUtil.getGPUs())}")
+        has_gpu = self.has_gpu_support()
+        gpu_count = len(self._safe_gpu_detection())
+        print(f"GPUs detected: {gpu_count}")
         print(f"CPU benchmarks: {'❌ DISABLED' if skip_cpu else '✅ ENABLED'}")
         print(f"GPU benchmarks: {'❌ DISABLED' if skip_gpu else '✅ ENABLED' if has_gpu else '❌ NO GPU DETECTED'}")
         
@@ -449,7 +481,7 @@ class PromptBenchmark:
                     if skip_cpu:
                         print(f"❌ No GPUs found for {model_tag} - cannot run GPU-only benchmark")
                     else:
-                        print(f"\nSkipping GPU benchmark for {model_tag} - No GPUs found")
+                        print(f"⚠️  Skipping GPU benchmark for {model_tag} - No GPU support detected")
 
         return self.results
 
