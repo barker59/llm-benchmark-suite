@@ -373,7 +373,7 @@ class PromptBenchmark:
         print(f"\n✓ Proceeding with {len(self.models)} valid models")
         return True
 
-    def run_comparison_benchmark(self, max_new_tokens=100, model_name_filter: str | None = None, skip_cpu=False):
+    def run_comparison_benchmark(self, max_new_tokens=100, model_name_filter: str | None = None, skip_cpu=False, skip_gpu=False):
         if not self.load_prompts(): return
         if not self.load_models(): return
 
@@ -405,15 +405,26 @@ class PromptBenchmark:
         has_gpu = bool(GPUtil.getGPUs())
         print(f"GPUs detected: {len(GPUtil.getGPUs())}")
         print(f"CPU benchmarks: {'❌ DISABLED' if skip_cpu else '✅ ENABLED'}")
-        print(f"GPU benchmarks: {'✅ ENABLED' if has_gpu else '❌ NO GPU DETECTED'}")
+        print(f"GPU benchmarks: {'❌ DISABLED' if skip_gpu else '✅ ENABLED' if has_gpu else '❌ NO GPU DETECTED'}")
+        
+        # Validate configuration
+        if skip_cpu and skip_gpu:
+            print("❌ Error: Both --skip-cpu and --skip-gpu flags used!")
+            print("   At least one device type must be enabled.")
+            return []
         
         if skip_cpu and not has_gpu:
             print("❌ Error: --skip-cpu flag used but no GPUs detected!")
             print("   Cannot run GPU-only benchmark without GPUs.")
             return []
         
+        if skip_gpu and not has_gpu:
+            print("ℹ️  --skip-gpu flag used but no GPUs detected anyway")
+        
         if skip_cpu:
             print("🚀 GPU-only mode enabled (skipping CPU benchmarks)")
+        elif skip_gpu:
+            print("🚀 CPU-only mode enabled (skipping GPU benchmarks)")
         
         for model_idx, model_tag in enumerate(self.models, 1):
             print(f"\n{'='*100}\nBENCHMARKING MODEL {model_idx}/{len(self.models)}: {model_tag}\n{'='*100}")
@@ -426,16 +437,19 @@ class PromptBenchmark:
             else:
                 print(f"\n⏭️  SKIPPING CPU BENCHMARK FOR {model_tag} (--skip-cpu flag)")
 
-            # GPU (if present)
-            if has_gpu:
+            # GPU (if present and not skipped)
+            if has_gpu and not skip_gpu:
                 print(f"\n{'='*80}\nSTARTING GPU BENCHMARK FOR {model_tag}\n{'='*80}")
                 gpu_res = self.benchmark_ollama_device(model_tag, "gpu", max_new_tokens)
                 self.results.extend(gpu_res)
             else:
-                if skip_cpu:
-                    print(f"❌ No GPUs found for {model_tag} - cannot run GPU-only benchmark")
-                else:
-                    print(f"\nSkipping GPU benchmark for {model_tag} - No GPUs found")
+                if skip_gpu:
+                    print(f"\n⏭️  SKIPPING GPU BENCHMARK FOR {model_tag} (--skip-gpu flag)")
+                elif not has_gpu:
+                    if skip_cpu:
+                        print(f"❌ No GPUs found for {model_tag} - cannot run GPU-only benchmark")
+                    else:
+                        print(f"\nSkipping GPU benchmark for {model_tag} - No GPUs found")
 
         return self.results
 
@@ -540,10 +554,11 @@ def main():
     parser.add_argument("--only-model", default=None)
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument("--skip-cpu", action="store_true", help="Skip CPU benchmarks and only run GPU benchmarks")
+    parser.add_argument("--skip-gpu", action="store_true", help="Skip GPU benchmarks and only run CPU benchmarks")
     args = parser.parse_args()
 
     bench = PromptBenchmark(args.prompts_file, args.models_file)
-    bench.run_comparison_benchmark(max_new_tokens=args.max_new_tokens, model_name_filter=args.only_model, skip_cpu=args.skip_cpu)
+    bench.run_comparison_benchmark(max_new_tokens=args.max_new_tokens, model_name_filter=args.only_model, skip_cpu=args.skip_cpu, skip_gpu=args.skip_gpu)
     bench.print_comparison_summary()
     bench.save_results("multi_model_benchmark")
     print("\nMulti-Model Benchmark complete!")
