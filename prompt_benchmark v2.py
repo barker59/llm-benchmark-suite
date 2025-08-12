@@ -1,5 +1,6 @@
-import time, psutil, pandas as pd, os, gc, requests, argparse, subprocess
+import time, psutil, pandas as pd, os, gc, requests, argparse, subprocess, threading, json, platform, sys
 from datetime import datetime
+from collections import defaultdict
 
 # Try to import GPUtil, but don't fail if it's not available
 try:
@@ -9,6 +10,181 @@ except ImportError:
     GPUTIL_AVAILABLE = False
     print("Warning: GPUtil not available. GPU detection will be disabled.")
 
+class SystemMonitor:
+    """Comprehensive system monitoring during benchmarks."""
+    
+    def __init__(self):
+        self.monitoring = False
+        self.monitor_thread = None
+        self.data = defaultdict(list)
+        self.start_time = None
+        
+    def start_monitoring(self, interval=1.0):
+        """Start system monitoring in background thread."""
+        if self.monitoring:
+            return
+            
+        self.monitoring = True
+        self.start_time = time.time()
+        self.data.clear()
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, args=(interval,))
+        self.monitor_thread.daemon = True
+        self.monitor_thread.start()
+        
+    def stop_monitoring(self):
+        """Stop system monitoring and return collected data."""
+        self.monitoring = False
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=2.0)
+        return dict(self.data)
+        
+    def _monitor_loop(self, interval):
+        """Background monitoring loop."""
+        while self.monitoring:
+            try:
+                timestamp = time.time() - self.start_time
+                
+                # CPU monitoring
+                cpu_percent = psutil.cpu_percent(interval=None, percpu=True)
+                self.data['cpu_percent_overall'].append(psutil.cpu_percent(interval=None))
+                self.data['cpu_percent_per_core'].append(cpu_percent)
+                self.data['cpu_count_logical'].append(psutil.cpu_count(logical=True))
+                self.data['cpu_count_physical'].append(psutil.cpu_count(logical=False))
+                
+                # CPU frequency
+                cpu_freq = psutil.cpu_freq()
+                if cpu_freq:
+                    self.data['cpu_freq_current'].append(cpu_freq.current)
+                    self.data['cpu_freq_max'].append(cpu_freq.max)
+                
+                # Memory monitoring
+                memory = psutil.virtual_memory()
+                self.data['memory_total'].append(memory.total)
+                self.data['memory_used'].append(memory.used)
+                self.data['memory_percent'].append(memory.percent)
+                self.data['memory_available'].append(memory.available)
+                
+                # Swap memory
+                swap = psutil.swap_memory()
+                self.data['swap_total'].append(swap.total)
+                self.data['swap_used'].append(swap.used)
+                self.data['swap_percent'].append(swap.percent)
+                
+                # Disk I/O
+                disk_io = psutil.disk_io_counters()
+                if disk_io:
+                    self.data['disk_read_bytes'].append(disk_io.read_bytes)
+                    self.data['disk_write_bytes'].append(disk_io.write_bytes)
+                    self.data['disk_read_count'].append(disk_io.read_count)
+                    self.data['disk_write_count'].append(disk_io.write_count)
+                
+                # Network I/O
+                net_io = psutil.net_io_counters()
+                if net_io:
+                    self.data['network_bytes_sent'].append(net_io.bytes_sent)
+                    self.data['network_bytes_recv'].append(net_io.bytes_recv)
+                    self.data['network_packets_sent'].append(net_io.packets_sent)
+                    self.data['network_packets_recv'].append(net_io.packets_recv)
+                
+                # GPU monitoring (if available)
+                if GPUTIL_AVAILABLE:
+                    try:
+                        gpus = GPUtil.getGPUs()
+                        if gpus:
+                            gpu = gpus[0]  # Monitor first GPU
+                            self.data['gpu_load'].append(gpu.load * 100)
+                            self.data['gpu_memory_used'].append(gpu.memoryUsed)
+                            self.data['gpu_memory_total'].append(gpu.memoryTotal)
+                            self.data['gpu_memory_percent'].append((gpu.memoryUsed / gpu.memoryTotal) * 100)
+                            self.data['gpu_temperature'].append(getattr(gpu, 'temperature', 0))
+                    except Exception:
+                        pass
+                
+                # Process-specific monitoring
+                current_process = psutil.Process()
+                self.data['process_cpu_percent'].append(current_process.cpu_percent())
+                self.data['process_memory_rss'].append(current_process.memory_info().rss)
+                self.data['process_memory_vms'].append(current_process.memory_info().vms)
+                self.data['process_num_threads'].append(current_process.num_threads())
+                
+                # System load average (Unix-like systems)
+                try:
+                    loadavg = os.getloadavg()
+                    self.data['load_avg_1min'].append(loadavg[0])
+                    self.data['load_avg_5min'].append(loadavg[1])
+                    self.data['load_avg_15min'].append(loadavg[2])
+                except (AttributeError, OSError):
+                    # Not available on Windows
+                    pass
+                
+                self.data['timestamp'].append(timestamp)
+                
+            except Exception as e:
+                print(f"Warning: Monitoring error: {e}")
+                
+            time.sleep(interval)
+    
+    def get_summary_stats(self, data):
+        """Generate summary statistics from monitoring data."""
+        if not data or not data.get('timestamp'):
+            return {}
+            
+        stats = {}
+        duration = data['timestamp'][-1] - data['timestamp'][0] if len(data['timestamp']) > 1 else 0
+        stats['monitoring_duration_seconds'] = duration
+        stats['monitoring_samples'] = len(data['timestamp'])
+        
+        # CPU stats
+        if 'cpu_percent_overall' in data:
+            cpu_data = data['cpu_percent_overall']
+            stats['cpu_avg_percent'] = sum(cpu_data) / len(cpu_data) if cpu_data else 0
+            stats['cpu_max_percent'] = max(cpu_data) if cpu_data else 0
+            stats['cpu_min_percent'] = min(cpu_data) if cpu_data else 0
+            
+        if 'cpu_percent_per_core' in data and data['cpu_percent_per_core']:
+            per_core = data['cpu_percent_per_core']
+            # Average across all samples and cores
+            core_averages = []
+            for sample in per_core:
+                if sample:
+                    core_averages.append(sum(sample) / len(sample))
+            if core_averages:
+                stats['cpu_avg_across_cores'] = sum(core_averages) / len(core_averages)
+                stats['cpu_max_across_cores'] = max(core_averages)
+        
+        if 'cpu_count_logical' in data and data['cpu_count_logical']:
+            stats['cpu_cores_logical'] = data['cpu_count_logical'][0]
+        if 'cpu_count_physical' in data and data['cpu_count_physical']:
+            stats['cpu_cores_physical'] = data['cpu_count_physical'][0]
+            
+        # Memory stats
+        if 'memory_percent' in data:
+            mem_data = data['memory_percent']
+            stats['memory_avg_percent'] = sum(mem_data) / len(mem_data) if mem_data else 0
+            stats['memory_max_percent'] = max(mem_data) if mem_data else 0
+            
+        if 'memory_total' in data and data['memory_total']:
+            stats['memory_total_gb'] = data['memory_total'][0] / (1024**3)
+            
+        # GPU stats
+        if 'gpu_load' in data and data['gpu_load']:
+            gpu_load = data['gpu_load']
+            stats['gpu_avg_load_percent'] = sum(gpu_load) / len(gpu_load)
+            stats['gpu_max_load_percent'] = max(gpu_load)
+            
+        if 'gpu_memory_percent' in data and data['gpu_memory_percent']:
+            gpu_mem = data['gpu_memory_percent']
+            stats['gpu_avg_memory_percent'] = sum(gpu_mem) / len(gpu_mem)
+            stats['gpu_max_memory_percent'] = max(gpu_mem)
+            
+        # Process stats
+        if 'process_cpu_percent' in data:
+            proc_cpu = data['process_cpu_percent']
+            stats['process_avg_cpu_percent'] = sum(proc_cpu) / len(proc_cpu) if proc_cpu else 0
+            stats['process_max_cpu_percent'] = max(proc_cpu) if proc_cpu else 0
+            
+        return stats
+
 class PromptBenchmark:
     def __init__(self, prompts_file="prompts.txt", models_file="models.txt"):
         self.prompts_file = prompts_file
@@ -17,6 +193,8 @@ class PromptBenchmark:
         self.prompts = []
         self.models = []
         self.run_timestamp = None
+        self.system_monitor = SystemMonitor()
+        self.enable_monitoring = True
 
     # --- IO helpers ---
     def load_prompts(self):
@@ -90,6 +268,144 @@ class PromptBenchmark:
     def get_system_memory(self):
         mem = psutil.virtual_memory()
         return {'total': mem.total, 'available': mem.available, 'used': mem.used, 'percent': mem.percent}
+    
+    def get_comprehensive_system_info(self):
+        """Get detailed system information for performance analysis."""
+        info = {
+            'system': {
+                'platform': platform.platform(),
+                'system': platform.system(),
+                'machine': platform.machine(),
+                'processor': platform.processor(),
+                'python_version': platform.python_version(),
+                'hostname': platform.node()
+            },
+            'cpu': {
+                'cores_logical': psutil.cpu_count(logical=True),
+                'cores_physical': psutil.cpu_count(logical=False),
+            },
+            'memory': {
+                'total_gb': psutil.virtual_memory().total / (1024**3),
+                'available_gb': psutil.virtual_memory().available / (1024**3),
+                'used_percent': psutil.virtual_memory().percent
+            },
+            'disk': {},
+            'gpu': {}
+        }
+        
+        # CPU frequency info
+        try:
+            cpu_freq = psutil.cpu_freq()
+            if cpu_freq:
+                info['cpu']['freq_current_mhz'] = cpu_freq.current
+                info['cpu']['freq_max_mhz'] = cpu_freq.max
+                info['cpu']['freq_min_mhz'] = cpu_freq.min
+        except:
+            pass
+            
+        # Disk info for current drive
+        try:
+            disk_usage = psutil.disk_usage('.')
+            info['disk']['total_gb'] = disk_usage.total / (1024**3)
+            info['disk']['free_gb'] = disk_usage.free / (1024**3)
+            info['disk']['used_percent'] = (disk_usage.used / disk_usage.total) * 100
+        except:
+            pass
+            
+        # Network interfaces
+        try:
+            net_stats = psutil.net_if_stats()
+            active_interfaces = [name for name, stats in net_stats.items() if stats.isup]
+            info['network'] = {'active_interfaces': active_interfaces}
+        except:
+            pass
+            
+        # GPU info
+        if GPUTIL_AVAILABLE:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]
+                    info['gpu'] = {
+                        'name': gpu.name,
+                        'memory_total_mb': gpu.memoryTotal,
+                        'driver_version': getattr(gpu, 'driver', 'unknown'),
+                        'temperature': getattr(gpu, 'temperature', 'unknown')
+                    }
+                else:
+                    info['gpu'] = {'status': 'no_gpus_detected'}
+            except Exception as e:
+                info['gpu'] = {'status': f'gpu_detection_error: {e}'}
+        else:
+            info['gpu'] = {'status': 'gputil_not_available'}
+            
+        return info
+    
+    def print_system_info(self):
+        """Print comprehensive system information."""
+        info = self.get_comprehensive_system_info()
+        
+        print("\n" + "="*80)
+        print("SYSTEM PERFORMANCE ANALYSIS")
+        print("="*80)
+        
+        print(f"\n🖥️  SYSTEM OVERVIEW:")
+        print(f"  Platform: {info['system']['platform']}")
+        print(f"  Processor: {info['system']['processor']}")
+        print(f"  Hostname: {info['system']['hostname']}")
+        print(f"  Python: {info['system']['python_version']}")
+        
+        print(f"\n🔧 CPU SPECIFICATIONS:")
+        print(f"  Physical Cores: {info['cpu']['cores_physical']}")
+        print(f"  Logical Cores: {info['cpu']['cores_logical']}")
+        if 'freq_current_mhz' in info['cpu']:
+            print(f"  Current Frequency: {info['cpu']['freq_current_mhz']:.0f} MHz")
+            print(f"  Max Frequency: {info['cpu']['freq_max_mhz']:.0f} MHz")
+            
+        print(f"\n💾 MEMORY SPECIFICATIONS:")
+        print(f"  Total RAM: {info['memory']['total_gb']:.2f} GB")
+        print(f"  Available RAM: {info['memory']['available_gb']:.2f} GB")
+        print(f"  Memory Usage: {info['memory']['used_percent']:.1f}%")
+        
+        if info['disk']:
+            print(f"\n💿 DISK SPECIFICATIONS:")
+            print(f"  Total Space: {info['disk']['total_gb']:.2f} GB")
+            print(f"  Free Space: {info['disk']['free_gb']:.2f} GB")
+            print(f"  Disk Usage: {info['disk']['used_percent']:.1f}%")
+            
+        print(f"\n🎮 GPU SPECIFICATIONS:")
+        if info['gpu'].get('name'):
+            print(f"  GPU: {info['gpu']['name']}")
+            print(f"  VRAM: {info['gpu']['memory_total_mb']} MB")
+            if info['gpu'].get('driver_version') != 'unknown':
+                print(f"  Driver: {info['gpu']['driver_version']}")
+        else:
+            print(f"  Status: {info['gpu']['status']}")
+            
+        # Performance expectations
+        print(f"\n⚡ PERFORMANCE EXPECTATIONS:")
+        cores = info['cpu']['cores_logical']
+        ram_gb = info['memory']['total_gb']
+        
+        if cores >= 8 and ram_gb >= 16:
+            perf_class = "High-Performance"
+            expected = "Fast inference (< 10s per prompt)"
+        elif cores >= 4 and ram_gb >= 8:
+            perf_class = "Mid-Range"
+            expected = "Moderate inference (10-30s per prompt)"
+        else:
+            perf_class = "Limited"
+            expected = "Slow inference (30s+ per prompt)"
+            
+        print(f"  Performance Class: {perf_class}")
+        print(f"  Expected Speed: {expected}")
+        
+        if ram_gb < 8:
+            print(f"  ⚠️  WARNING: Low RAM may cause model swapping to disk")
+        if cores < 4:
+            print(f"  ⚠️  WARNING: Few CPU cores may limit parallel processing")
+            
+        return info
 
     # --- Ollama helpers ---
     def _ollama_base(self):
@@ -276,7 +592,18 @@ class PromptBenchmark:
                     info = self.get_gpu_info()
                     if info: before_used = info['memory_used']
 
+                # Start system monitoring for this iteration
+                if self.enable_monitoring:
+                    self.system_monitor.start_monitoring(interval=0.5)
+
                 data, wall = self.generate_ollama(model_tag, prompt, max_new_tokens, use_gpu)
+                
+                # Stop monitoring and collect data
+                monitoring_data = {}
+                monitoring_stats = {}
+                if self.enable_monitoring:
+                    monitoring_data = self.system_monitor.stop_monitoring()
+                    monitoring_stats = self.system_monitor.get_summary_stats(monitoring_data)
 
                 # Check for generation errors
                 if "error" in data:
@@ -315,7 +642,15 @@ class PromptBenchmark:
                 times.append(wall)
                 mem_deltas.append(max(0, after_used - before_used))
                 gen_text = data.get("response", "")
-                print(f"  ✓ Iteration {itr+1}: {wall:.3f}s, Generated: {len(gen_text)} chars")
+                
+                # Print iteration results with monitoring info
+                monitoring_summary = ""
+                if monitoring_stats:
+                    cpu_avg = monitoring_stats.get('cpu_avg_percent', 0)
+                    mem_avg = monitoring_stats.get('memory_avg_percent', 0)
+                    monitoring_summary = f", CPU: {cpu_avg:.1f}%, RAM: {mem_avg:.1f}%"
+                    
+                print(f"  ✓ Iteration {itr+1}: {wall:.3f}s, Generated: {len(gen_text)} chars{monitoring_summary}")
 
             # Check if we have any successful iterations
             if not times:
@@ -352,6 +687,31 @@ class PromptBenchmark:
                     "gpu_name": gpu_name,
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
+                
+                # Add monitoring statistics if available (use last iteration's stats)
+                if monitoring_stats:
+                    result.update({
+                        "cpu_avg_percent": monitoring_stats.get('cpu_avg_percent', 0),
+                        "cpu_max_percent": monitoring_stats.get('cpu_max_percent', 0),
+                        "cpu_cores_logical": monitoring_stats.get('cpu_cores_logical', 0),
+                        "cpu_cores_physical": monitoring_stats.get('cpu_cores_physical', 0),
+                        "memory_avg_percent": monitoring_stats.get('memory_avg_percent', 0),
+                        "memory_max_percent": monitoring_stats.get('memory_max_percent', 0),
+                        "memory_total_gb": monitoring_stats.get('memory_total_gb', 0),
+                        "process_avg_cpu_percent": monitoring_stats.get('process_avg_cpu_percent', 0),
+                        "process_max_cpu_percent": monitoring_stats.get('process_max_cpu_percent', 0),
+                        "monitoring_duration_seconds": monitoring_stats.get('monitoring_duration_seconds', 0),
+                        "monitoring_samples": monitoring_stats.get('monitoring_samples', 0),
+                    })
+                    
+                    # Add GPU stats if available
+                    if 'gpu_avg_load_percent' in monitoring_stats:
+                        result.update({
+                            "gpu_avg_load_percent": monitoring_stats.get('gpu_avg_load_percent', 0),
+                            "gpu_max_load_percent": monitoring_stats.get('gpu_max_load_percent', 0),
+                            "gpu_avg_memory_percent": monitoring_stats.get('gpu_avg_memory_percent', 0),
+                            "gpu_max_memory_percent": monitoring_stats.get('gpu_max_memory_percent', 0),
+                        })
                 print(f"  ✓ Average time: {avg_time:.3f}s ± {std_dev:.3f}s ({len(times)}/3 successful iterations)")
                 
             device_results.append(result)
@@ -423,6 +783,9 @@ class PromptBenchmark:
             print("❌ Benchmark cancelled due to model validation failures")
             return []
 
+        # Show comprehensive system information
+        self.print_system_info()
+        
         print(f"\n{'='*80}")
         print(f"BENCHMARK CONFIGURATION")
         print(f"{'='*80}")
@@ -431,7 +794,7 @@ class PromptBenchmark:
             print(f"  {i}. {m}")
         print(f"Number of prompts: {len(self.prompts)}")
         print(f"Max new tokens per generation: {max_new_tokens}")
-        print(f"System Memory: {self.get_system_memory()['total'] / (1024**3):.2f} GB")
+        print(f"System monitoring: {'✅ ENABLED' if self.enable_monitoring else '❌ DISABLED'}")
 
         has_gpu = self.has_gpu_support()
         gpu_count = len(self._safe_gpu_detection())
@@ -501,7 +864,14 @@ class PromptBenchmark:
             base_cols = [
                 "model","device","prompt_number","prompt_preview",
                 "avg_generation_time","std_deviation","max_new_tokens",
-                "memory_used_mb","gpu_name","timestamp","run_timestamp"
+                "memory_used_mb","gpu_name","timestamp","run_timestamp",
+                # System monitoring columns
+                "cpu_avg_percent","cpu_max_percent","cpu_cores_logical","cpu_cores_physical",
+                "memory_avg_percent","memory_max_percent","memory_total_gb",
+                "process_avg_cpu_percent","process_max_cpu_percent",
+                "gpu_avg_load_percent","gpu_max_load_percent",
+                "gpu_avg_memory_percent","gpu_max_memory_percent",
+                "monitoring_duration_seconds","monitoring_samples"
             ]
             
             # Add error columns if any results contain errors
@@ -587,9 +957,29 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument("--skip-cpu", action="store_true", help="Skip CPU benchmarks and only run GPU benchmarks")
     parser.add_argument("--skip-gpu", action="store_true", help="Skip GPU benchmarks and only run CPU benchmarks")
+    parser.add_argument("--disable-monitoring", action="store_true", help="Disable system monitoring during benchmarks")
+    parser.add_argument("--system-info-only", action="store_true", help="Show system information and exit (no benchmarking)")
     args = parser.parse_args()
 
     bench = PromptBenchmark(args.prompts_file, args.models_file)
+    bench.enable_monitoring = not args.disable_monitoring
+    
+    # Handle system info only mode
+    if args.system_info_only:
+        bench.print_system_info()
+        print("\n" + "="*80)
+        print("SYSTEM ANALYSIS COMPLETE")
+        print("="*80)
+        print("\n💡 PERFORMANCE INSIGHTS:")
+        print("  - Compare CPU cores/frequency between desktop vs server")
+        print("  - Check RAM amount and speed differences") 
+        print("  - Verify disk type (SSD vs HDD) and free space")
+        print("  - Look for network latency if using remote Ollama")
+        print("  - Monitor temperature throttling on server")
+        print("\n🚀 To run actual benchmark:")
+        print(f"  python \"{sys.argv[0]}\" --max-new-tokens 50 --only-model <small-model>")
+        return
+    
     bench.run_comparison_benchmark(max_new_tokens=args.max_new_tokens, model_name_filter=args.only_model, skip_cpu=args.skip_cpu, skip_gpu=args.skip_gpu)
     bench.print_comparison_summary()
     bench.save_results("multi_model_benchmark")

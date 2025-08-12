@@ -6,10 +6,13 @@ A comprehensive benchmarking suite for Large Language Models (LLMs) using Ollama
 
 - **Multi-Model Testing**: Benchmark multiple LLMs simultaneously
 - **CPU vs GPU Comparison**: Performance analysis across different hardware configurations
+- **Real-Time System Monitoring**: Track CPU, memory, disk I/O, and GPU usage during inference
 - **Comprehensive Metrics**: Generation time, memory usage, error tracking, and statistical analysis
+- **Performance Bottleneck Analysis**: Identify system limitations and optimization opportunities
 - **Robust Error Handling**: Graceful handling of model failures and network issues
 - **Automated Model Management**: Automatic model validation and pulling from Ollama registry
 - **Detailed Reporting**: CSV output with statistical summaries and performance comparisons
+- **System Comparison Tools**: Compare performance between different machines
 
 ## Prerequisites
 
@@ -71,8 +74,32 @@ python "prompt_benchmark v2.py" --skip-cpu
 # Custom token limit
 python "prompt_benchmark v2.py" --max-new-tokens 200
 
+# Disable system monitoring (faster but less detailed)
+python "prompt_benchmark v2.py" --disable-monitoring
+
+# Show system information only (no benchmarking)
+python "prompt_benchmark v2.py" --system-info-only
+
 # Custom files
 python "prompt_benchmark v2.py" --prompts-file custom_prompts.txt --models-file custom_models.txt
+```
+
+### Quick Performance Testing
+```bash
+# Fast system performance check
+python quick_test.py
+
+# Test specific model with custom settings
+python quick_test.py --model llama3.2:3b --tokens 30
+
+# Comprehensive system analysis
+python system_analyzer.py
+
+# Export system specs for comparison
+python system_analyzer.py --export desktop_specs.json
+
+# Compare two systems
+python system_analyzer.py --compare desktop_specs.json server_specs.json
 ```
 
 ### Command Line Arguments
@@ -81,11 +108,15 @@ python "prompt_benchmark v2.py" --prompts-file custom_prompts.txt --models-file 
 - `--only-model`: Filter to specific model name (substring match)
 - `--max-new-tokens`: Maximum tokens to generate per prompt (default: 100)
 - `--skip-cpu`: Skip CPU benchmarks and only run GPU tests
+- `--disable-monitoring`: Disable real-time system monitoring
+- `--system-info-only`: Show system information and exit
 
 ## Output
 
 ### CSV Results
 Results are saved as `multi_model_benchmark_YYYY-MM-DD_HH-MM-SS.csv` with columns:
+
+**Core Performance Metrics:**
 - `model`: Model name
 - `device`: cpu/gpu
 - `prompt_number`: Sequential prompt identifier
@@ -97,6 +128,25 @@ Results are saved as `multi_model_benchmark_YYYY-MM-DD_HH-MM-SS.csv` with column
 - `gpu_name`: GPU model name
 - `timestamp`: Individual test timestamp
 - `run_timestamp`: Benchmark run identifier
+
+**System Monitoring Metrics (when enabled):**
+- `cpu_avg_percent`: Average CPU utilization during inference
+- `cpu_max_percent`: Peak CPU utilization
+- `cpu_cores_logical`: Number of logical CPU cores
+- `cpu_cores_physical`: Number of physical CPU cores
+- `memory_avg_percent`: Average RAM utilization
+- `memory_max_percent`: Peak RAM utilization
+- `memory_total_gb`: Total system RAM in GB
+- `process_avg_cpu_percent`: Average CPU usage by benchmark process
+- `process_max_cpu_percent`: Peak CPU usage by benchmark process
+- `gpu_avg_load_percent`: Average GPU utilization (if GPU available)
+- `gpu_max_load_percent`: Peak GPU utilization
+- `gpu_avg_memory_percent`: Average GPU memory utilization
+- `gpu_max_memory_percent`: Peak GPU memory utilization
+- `monitoring_duration_seconds`: Duration of monitoring period
+- `monitoring_samples`: Number of monitoring samples collected
+
+**Error Tracking:**
 - `error`: Error message (if any)
 - `error_type`: Error category (if any)
 
@@ -180,7 +230,87 @@ WantedBy=multi-user.target
 ### Environment Variables
 - `OLLAMA_BASE_URL`: Custom Ollama endpoint (default: `http://127.0.0.1:11434`)
 
-## Troubleshooting
+## Performance Analysis & Troubleshooting
+
+### Diagnosing Slow Performance
+
+If your server is significantly slower than your desktop (150s vs 12s), follow this diagnostic process:
+
+#### Step 1: Quick System Check
+```bash
+# Get basic system information
+python "prompt_benchmark v2.py" --system-info-only
+
+# Run quick performance test
+python quick_test.py --model llama3.2:3b --tokens 30
+```
+
+#### Step 2: Compare Systems
+```bash
+# On desktop - export system specs
+python system_analyzer.py --export desktop_specs.json
+
+# On server - export system specs  
+python system_analyzer.py --export server_specs.json
+
+# Compare the two systems
+python system_analyzer.py --compare desktop_specs.json server_specs.json
+```
+
+#### Step 3: Detailed Monitoring
+```bash
+# Run benchmark with full monitoring
+python "prompt_benchmark v2.py" --only-model llama3.2:3b --max-new-tokens 50
+
+# Check the CSV output for bottlenecks:
+# - High CPU usage (>90%) = CPU-bound
+# - High memory usage (>90%) = RAM-limited  
+# - Low GPU usage (<50%) = GPU not utilized
+# - High disk I/O = Model swapping to disk
+```
+
+### Common Performance Bottlenecks
+
+1. **CPU Cores**: Server has fewer cores than desktop
+   - **Symptoms**: High CPU usage (>90%), slow inference
+   - **Solution**: Use smaller models or upgrade CPU
+
+2. **RAM Limitation**: Server has less RAM
+   - **Symptoms**: High memory usage (>90%), disk swapping
+   - **Solution**: Add more RAM or use smaller models
+
+3. **Disk Speed**: Server uses HDD instead of SSD
+   - **Symptoms**: High disk I/O during model loading
+   - **Solution**: Migrate to SSD or ensure model caching
+
+4. **Network Latency**: Using remote Ollama service
+   - **Symptoms**: Consistent high latency regardless of model size
+   - **Solution**: Run Ollama locally on server
+
+5. **GPU Configuration**: GPU not being utilized
+   - **Symptoms**: Low GPU usage, high CPU usage
+   - **Solution**: Check NVIDIA drivers, CUDA installation
+
+### Performance Optimization Tips
+
+1. **Model Selection**: Start with smaller models
+   ```bash
+   # Try 3B model instead of 7B+
+   echo "llama3.2:3b" > models.txt
+   ```
+
+2. **Resource Allocation**: Ensure Ollama has sufficient resources
+   ```bash
+   # Check Ollama memory usage
+   docker stats ollama  # if using Docker
+   ps aux | grep ollama  # if using direct install
+   ```
+
+3. **System Optimization**: 
+   - Close unnecessary applications
+   - Ensure sufficient free RAM (>25%)
+   - Use SSD for model storage
+   - Check for thermal throttling
 
 ### Common Issues
 
